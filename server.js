@@ -260,10 +260,27 @@ async function extractNaverBlogWithPuppeteer(url) {
     console.log(`[Puppeteer] 추출 시작: ${url}`);
     let browser;
     try {
-        browser = await puppeteer.launch({ 
+        // OnRender 환경에 맞는 Puppeteer 설정
+        const launchOptions = {
             headless: true,
-            args: ['--no-sandbox', '--disable-setuid-sandbox'] 
-        });
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-accelerated-2d-canvas',
+                '--no-first-run',
+                '--no-zygote',
+                '--single-process',
+                '--disable-gpu'
+            ]
+        };
+
+        // OnRender 환경에서는 추가 설정
+        if (process.env.NODE_ENV === 'production') {
+            launchOptions.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable';
+        }
+
+        browser = await puppeteer.launch(launchOptions);
         const page = await browser.newPage();
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
         
@@ -475,6 +492,7 @@ function extractNaverBlogContent(html) {
 }
 
 // 서버 시작
-app.listen(PORT, () => {
-    console.log(`서버가 http://localhost:${PORT} 에서 실행 중입니다.`);
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`서버가 포트 ${PORT}에서 실행 중입니다.`);
+    console.log(`환경: ${process.env.NODE_ENV || 'development'}`);
 });
