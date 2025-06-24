@@ -4,7 +4,6 @@ const axios = require('axios');
 const cheerio = require('cheerio');
 const path = require('path');
 
-// Puppeteer 조건부 import
 let puppeteer = null;
 try {
     puppeteer = require('puppeteer');
@@ -16,15 +15,23 @@ try {
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// 미들웨어 설정
 app.use(cors());
 app.use(express.json());
 app.use(express.static('./')); // 정적 파일 서빙
 
-// 메인 페이지 라우트
 app.get('/', (req, res) => {
     res.sendFile(__dirname + '/word.html');
 });
+
+// 문단 단위로 줄바꿈 함수 (문단 내 줄바꿈은 그대로 두고, 문단 구분만 \n\n)
+function splitParagraphs(text) {
+    if (!text) return '';
+    return text
+        .split(/\n{2,}/g)
+        .map(p => p.trim())
+        .filter(Boolean)
+        .join('\n\n');
+}
 
 // URL에서 텍스트 추출하는 API 엔드포인트
 app.post('/api/extract-text', async (req, res) => {
@@ -48,20 +55,22 @@ app.post('/api/extract-text', async (req, res) => {
         console.log(`[Server] 응답 데이터 길이: ${response.data.length}`);
 
         const { text, html } = extractNaverBlogContent(response.data);
+        const paraText = splitParagraphs(text);
 
-        if (text && text.length >= 50) {
+        if (paraText && paraText.length >= 50) {
             console.log('[Server] Cheerio 추출 성공');
-            return res.json({ success: true, text, html });
+            return res.json({ success: true, text: paraText, html });
         }
 
         // 2. Puppeteer가 사용 가능한 경우에만 재시도
         if (puppeteer) {
             console.log('[Server] Cheerio 추출 실패 또는 내용 부족. Puppeteer로 재시도.');
             const puppeteerText = await extractNaverBlogWithPuppeteer(url);
-            if (puppeteerText && puppeteerText.length >= 50) {
+            const paraPuppeteerText = splitParagraphs(puppeteerText);
+            if (paraPuppeteerText && paraPuppeteerText.length >= 50) {
                 console.log('[Server] Puppeteer 추출 성공');
-                const puppeteerHtml = puppeteerText.replace(/\n/g, '<br>').replace(/(https?:\/\/[^\s]+)/g, '<a href="$1" target="_blank">$1</a>');
-                return res.json({ success: true, text: puppeteerText, html: puppeteerHtml });
+                const puppeteerHtml = paraPuppeteerText.replace(/\n/g, '<br>').replace(/(https?:\/\/[^\s]+)/g, '<a href="$1" target="_blank">$1</a>');
+                return res.json({ success: true, text: paraPuppeteerText, html: puppeteerHtml });
             }
         } else {
             console.log('[Server] Puppeteer not available, skipping fallback');
@@ -79,10 +88,11 @@ app.post('/api/extract-text', async (req, res) => {
             try {
                 console.log('[Server] 오류로 인해 Puppeteer로 재시도.');
                 const puppeteerText = await extractNaverBlogWithPuppeteer(url);
-                if (puppeteerText && puppeteerText.length >= 50) {
+                const paraPuppeteerText = splitParagraphs(puppeteerText);
+                if (paraPuppeteerText && paraPuppeteerText.length >= 50) {
                     console.log('[Server] Puppeteer 재시도 추출 성공');
-                    const puppeteerHtml = puppeteerText.replace(/\n/g, '<br>').replace(/(https?:\/\/[^\s]+)/g, '<a href="$1" target="_blank">$1</a>');
-                    return res.json({ success: true, text: puppeteerText, html: puppeteerHtml });
+                    const puppeteerHtml = paraPuppeteerText.replace(/\n/g, '<br>').replace(/(https?:\/\/[^\s]+)/g, '<a href="$1" target="_blank">$1</a>');
+                    return res.json({ success: true, text: paraPuppeteerText, html: puppeteerHtml });
                 }
                 console.log('[Server] Puppeteer 재시도 실패.');
             } catch (puppeteerError) {
@@ -94,185 +104,73 @@ app.post('/api/extract-text', async (req, res) => {
     }
 });
 
-// HTML에서 텍스트 추출 함수
-function extractTextFromHtml(html, url) {
+// Cheerio를 사용하여 네이버 블로그 텍스트/HTML 추출
+function extractNaverBlogContent(html) {
     const $ = cheerio.load(html);
-    
-    // 불필요한 요소 제거
-    $('script, style, nav, header, footer, aside, .header, .footer, .nav, .menu, .sidebar, .advertisement, .ad, .popup').remove();
-    
-    // 블로그별 주요 컨텐츠 선택자
-    const contentSelectors = [
-        // 네이버 블로그 (최신 에디터)
-        '.se-main-container', '.se-module-text', '.se-text-paragraph', '.se-module',
-        // 네이버 블로그 (구 에디터)
-        '#postViewArea', '.post-view', '.post_ct', '.se-component',
-        // 네이버 블로그 (스마트에디터 3.0)
-        '.se-component-wrap', '.se-text', '.se-module-text p',
-        // 티스토리
-        '.entry-content', '.article', '.post-content',
-        // 브런치
-        '.wrap_body', '.text',
-        // 벨로그
-        '.atom-one', '.markdown-body',
-        // 일반적인 선택자
-        'article', '[role="main"]', '.content', '.post-content', 
-        '.entry-content', '.post-body', '#content', 'main',
-        '.post', '.article-content', '.story-body'
-    ];
-    
-    let mainContent = null;
-    
-    // URL별 특별 처리
-    if (url.includes('blog.naver.com')) {
-        // 네이버 블로그 특별 처리
-        const naverSelectors = [
-            '.se-main-container',
-            '#postViewArea', 
-            '.post-view',
-            '.se-component',
-            '.se-module',
-            '.post_ct',
-            '.se-component-wrap'
-        ];
-        
-        for (const selector of naverSelectors) {
-            mainContent = $(selector).first();
-            if (mainContent.length && mainContent.text().trim().length > 50) {
-                console.log(`네이버 블로그 - 사용된 선택자: ${selector}`);
-                break;
-            }
+    let lines = [];
+    // 1. 제목 추출 (있으면 맨 앞에)
+    let title = $('.se-title-text, .tit_seblog').first().text().trim();
+    if (title) lines.push(title);
+    // 2. 본문 내 'hwaseon'이 포함된 이미지 src 추출 (있으면 두 번째 줄)
+    let hwaseonImg = null;
+    $('.se-main-container img, #postViewArea img, body img').each(function() {
+        const $img = $(this);
+        const src = $img.attr('data-lazy-src') || $img.attr('src') || '';
+        if (src.includes('hwaseon')) {
+            hwaseonImg = src;
+            return false; // break
         }
-        
-        // 여전히 내용이 부족하면 모든 텍스트 요소 수집
-        if (!mainContent || mainContent.text().trim().length < 50) {
-            const allTextElements = $('.se-module-text, .se-text-paragraph, .se-text, p, div').filter(function() {
-                return $(this).text().trim().length > 10;
-            });
-            
-            if (allTextElements.length > 0) {
-                mainContent = $('<div>');
-                allTextElements.each(function() {
-                    const text = $(this).text().trim();
-                    if (text.length > 10 && !text.match(/^[\s\n\r\t]*$/)) {
-                        mainContent.append(`<p>${text}</p>`);
-                    }
-                });
-                console.log(`네이버 블로그 - 텍스트 요소 수집: ${allTextElements.length}개`);
-            }
-        }
-    } else if (url.includes('tistory.com')) {
-        // 티스토리 특별 처리
-        mainContent = $('.entry-content').first();
-        if (!mainContent.length) {
-            mainContent = $('.article').first();
-        }
-    } else {
-        // 일반적인 컨텐츠 찾기
-        for (const selector of contentSelectors) {
-            mainContent = $(selector).first();
-            if (mainContent.length && mainContent.text().trim().length > 100) {
-                break;
-            }
-        }
-    }
-    
-    // 메인 컨텐츠가 없으면 body 전체 사용
-    if (!mainContent || !mainContent.length) {
-        mainContent = $('body');
-    }
-    
-    // 텍스트 추출
-    let text = mainContent.text() || '';
-    
-    // 텍스트 정리
-    text = text
-        .replace(/\s+/g, ' ')  // 연속된 공백을 하나로
-        .replace(/\n\s*\n/g, '\n')  // 연속된 줄바꿈 제거
-        .replace(/[\t\r]/g, ' ')  // 탭과 캐리지 리턴을 공백으로
-        .trim();
-    
-    // 너무 짧은 텍스트는 제외
-    if (text.length < 100) {
-        // p 태그들의 텍스트를 직접 추출
-        const paragraphs = [];
-        mainContent.find('p, div').each((i, el) => {
-            const pText = $(el).text().trim();
-            if (pText.length > 20 && !pText.match(/^[\s\n\r\t]*$/)) {
-                paragraphs.push(pText);
-            }
+    });
+    if (hwaseonImg) lines.push(hwaseonImg);
+    // 3. 본문 한 줄씩 추출 (span)
+    $('.se-main-container span[class*="se-fs-fs"], #postViewArea span[class*="se-fs-fs"], body span[class*="se-fs-fs"]').each(function() {
+        const txt = $(this).text().replace(/\r/g, '').trim();
+        if (txt.length > 0) lines.push(txt);
+    });
+    // 만약 위에서 아무것도 안 나오면 기존 방식 fallback
+    if (lines.length <= (title ? 1 : 0) + (hwaseonImg ? 1 : 0)) {
+        $('.se-main-container .se-module-text, .se-main-container .se-text-paragraph').each(function() {
+            const txt = $(this).text().trim();
+            if (txt.length > 0 && !lines.includes(txt)) lines.push(txt);
         });
-        
-        if (paragraphs.length > 0) {
-            text = paragraphs.join('\n').trim();
+        if (lines.length <= (title ? 1 : 0) + (hwaseonImg ? 1 : 0)) {
+            $('#postViewArea p, #postViewArea div').each(function() {
+                const txt = $(this).text().trim();
+                if (txt.length > 0 && !lines.includes(txt)) lines.push(txt);
+            });
+        }
+        if (lines.length <= (title ? 1 : 0) + (hwaseonImg ? 1 : 0)) {
+            $('body p, body div').each(function() {
+                const txt = $(this).text().trim();
+                if (txt.length > 0 && !lines.includes(txt)) lines.push(txt);
+            });
         }
     }
-    
-    return text;
-}
-
-// 네이버 블로그 전용 텍스트 추출 함수 (Cheerio 기반)
-function extractNaverBlogText(html, url) {
-    const $ = cheerio.load(html);
-    
-    console.log('네이버 블로그 HTML 파싱 시작');
-    
-    // 불필요한 요소들을 먼저 제거
-    $('script, style, nav, header, footer, .header, .footer, .nav, .menu, .sidebar, .advertisement, .ad, .popup, .comment, .date, .author, .profile, .btn, button, .share, .like, .follow, .subscribe').remove();
-    
-    let title = '';
-    let content = '';
-    
-    // 1. 제목 추출
-    const titleSelectors = [
-        '.se-title-text',
-        '.post-title', 
-        '.title',
-        'h1',
-        '.se-module-text h1',
-        '.se-text-paragraph h1'
-    ];
-    
-    for (const selector of titleSelectors) {
-        const titleElement = $(selector).first();
-        if (titleElement.length > 0) {
-            title = titleElement.text().trim();
-            console.log(`제목 발견: ${title}`);
-            break;
+    // 4. 해시태그 추출 (마지막 줄)
+    let hashtags = [];
+    // 네이버 최신 에디터
+    $('.se-main-container .se-hash-tag, .se-hash-tag, .tag, .post_tag, .wrap_tag, .item_tag, .tag_item').find('a, span').each(function() {
+        let tag = $(this).text().trim();
+        if (tag.startsWith('#')) tag = tag.replace(/^#+/, '#');
+        else if (tag.length > 0) tag = '#' + tag;
+        if (tag.length > 1 && !hashtags.includes(tag)) hashtags.push(tag);
+    });
+    // 혹시 위에서 못 찾으면, 본문 내 #으로 시작하는 단어도 추가
+    if (hashtags.length === 0) {
+        const text = $.root().text();
+        const matches = text.match(/#[\w가-힣]+/g);
+        if (matches) {
+            matches.forEach(tag => {
+                if (!hashtags.includes(tag)) hashtags.push(tag);
+            });
         }
     }
-    
-    // 2. 본문 내용 추출 (제목 제외)
-    const contentSelectors = [
-        '.se-main-container',
-        '#postViewArea',
-        '.post_ct',
-        '.post-view',
-        '.post-content'
-    ];
-    
-    for (const selector of contentSelectors) {
-        const container = $(selector).first();
-        if (container.length > 0) {
-            console.log(`본문 컨테이너 발견: ${selector}`);
-            
-            // 본문 HTML과 텍스트를 모두 추출
-            const htmlContent = container.html();
-            const textContent = container.text();
-            
-            return {
-                text: textContent,
-                html: htmlContent
-            };
-        }
+    if (hashtags.length > 0) lines.push(hashtags.join(' '));
+    const text = lines.join('\n');
+    if (text.length >= 50) {
+        return { text };
     }
-    
-    // 컨테이너를 찾지 못한 경우, body 전체를 반환 (최후의 수단)
-    console.log('주요 본문 컨테이너를 찾지 못함. body 전체를 사용합니다.');
-    return {
-        text: $('body').text(),
-        html: $('body').html()
-    };
+    return { text: '', html: '' };
 }
 
 // Puppeteer를 사용하여 네이버 블로그 텍스트 추출 (Fallback)
@@ -281,11 +179,9 @@ async function extractNaverBlogWithPuppeteer(url) {
         console.log('[Puppeteer] Puppeteer not available');
         return null;
     }
-    
     console.log(`[Puppeteer] 추출 시작: ${url}`);
     let browser;
     try {
-        // OnRender 환경에 맞는 Puppeteer 설정
         const launchOptions = {
             headless: true,
             args: [
@@ -299,19 +195,13 @@ async function extractNaverBlogWithPuppeteer(url) {
                 '--disable-gpu'
             ]
         };
-
-        // OnRender 환경에서는 추가 설정
         if (process.env.NODE_ENV === 'production') {
             launchOptions.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable';
         }
-
         browser = await puppeteer.launch(launchOptions);
         const page = await browser.newPage();
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
-        
         await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
-
-        // Lazy-loading 이미지 로드를 위해 페이지 아래로 스크롤
         await page.evaluate(async () => {
             await new Promise((resolve) => {
                 let totalHeight = 0;
@@ -320,7 +210,6 @@ async function extractNaverBlogWithPuppeteer(url) {
                     const scrollHeight = document.body.scrollHeight;
                     window.scrollBy(0, distance);
                     totalHeight += distance;
-
                     if (totalHeight >= scrollHeight) {
                         clearInterval(timer);
                         resolve();
@@ -328,44 +217,30 @@ async function extractNaverBlogWithPuppeteer(url) {
                 }, 100);
             });
         });
-        
-        // iframe 내부 컨텐츠 처리
         let mainFrame = page.mainFrame();
         const blogFrame = mainFrame.childFrames().find(frame => frame.name() === 'mainFrame');
         const targetFrame = blogFrame || mainFrame;
-
-        // 특정 컨텐츠 영역이 로드될 때까지 대기
         const contentSelector = '.se-main-container, #postViewArea';
         await targetFrame.waitForSelector(contentSelector, { timeout: 10000 }).catch(() => {
             console.log('[Puppeteer] 특정 컨텐츠 영역을 찾을 수 없습니다.');
         });
-
         const extractedData = await targetFrame.evaluate(() => {
             let content = '';
             let firstImageFound = false;
-            
-            // 1. 제목 추출
             const titleEl = document.querySelector('.se-title-text, .tit_seblog');
             const title = titleEl ? titleEl.innerText.trim() : '';
-
-            // 2. 광고/공지 문구 추출
             const noticeEl = document.querySelector('.se_textarea[data-testid="se-document-notice-text"], .se-module-text-notice');
             const notice = noticeEl ? noticeEl.innerText.trim() : '';
-            
-            // 3. 본문 내용 추출
             const mainContainer = document.querySelector('.se-main-container');
             if (mainContainer) {
                 const nodes = mainContainer.querySelectorAll('.se-module');
                 nodes.forEach(node => {
-                    // 텍스트 모듈
                     if (node.classList.contains('se-module-text') && !node.classList.contains('se-module-text-notice')) {
                         const text = node.innerText.trim();
                         if (text) {
                             content += text + '\n\n';
                         }
-                    }
-                    // 이미지 모듈
-                    else if (node.classList.contains('se-module-image')) {
+                    } else if (node.classList.contains('se-module-image')) {
                         const img = node.querySelector('img');
                         if (img) {
                             const imgSrc = img.src || img.getAttribute('data-lazy-src');
@@ -381,12 +256,9 @@ async function extractNaverBlogWithPuppeteer(url) {
                     }
                 });
             } else {
-                // 구버전 에디터용
                 const postArea = document.querySelector('#postViewArea');
                 if (postArea) content = postArea.innerText.trim();
             }
-
-            // 4. 해시태그 추출
             const tags = new Set();
             document.querySelectorAll('.wrap_tag a, .post_tag a, .item_tag a, .tag_item a, a._rosRestrict, a.tag_log').forEach(tag => {
                 let tagText = tag.innerText.trim();
@@ -396,20 +268,15 @@ async function extractNaverBlogWithPuppeteer(url) {
                 if(tagText) tags.add('#' + tagText);
             });
             const tagString = Array.from(tags).join(' ');
-
-            // 5. 전체 조합
             let fullText = '';
             if (title) fullText += title.trim() + '\n\n';
             if (notice) fullText += notice.trim() + '\n\n';
             if (content) fullText += content.trim() + '\n\n';
             if (tagString) fullText += tagString.trim() + '\n\n';
-
             return fullText.trim().replace(/\n{3,}/g, '\n\n');
         });
-
         console.log(`[Puppeteer] 추출된 텍스트 길이: ${extractedData.length}`);
         return extractedData;
-
     } catch (error) {
         console.error('[Puppeteer] 오류 발생:', error);
         return null;
@@ -420,130 +287,6 @@ async function extractNaverBlogWithPuppeteer(url) {
     }
 }
 
-// 간단한 텍스트 추출 함수 (fallback용)
-function extractSimpleText(html) {
-    const $ = cheerio.load(html);
-    
-    // 모든 script, style 태그 제거
-    $('script, style').remove();
-    
-    // 텍스트만 추출
-    let text = $('body').text();
-    
-    // 텍스트 정리
-    text = text
-        .replace(/\s+/g, ' ')  // 연속된 공백을 하나로
-        .replace(/\n\s*\n/g, '\n')  // 연속된 줄바꿈 제거
-        .replace(/[\t\r]/g, ' ')  // 탭과 캐리지 리턴을 공백으로
-        .trim();
-    
-    return text;
-}
-
-// Cheerio를 사용하여 네이버 블로그 텍스트/HTML 추출
-function extractNaverBlogContent(html) {
-    const $ = cheerio.load(html);
-    let content = '';
-    let contentHtml = '';
-    let firstImageFound = false;
-
-    // 1. 제목 및 광고 문구 추출
-    const title = $('.se-title-text, .tit_seblog').first().text().trim();
-    const notice = $('.se_textarea[data-testid="se-document-notice-text"], .se-module-text-notice').first().text().trim();
-
-    // 2. 본문 추출
-    const mainContainer = $('.se-main-container');
-    if (mainContainer.length > 0) {
-        mainContainer.children('.se-module').each((i, module) => {
-            const moduleElement = $(module);
-            
-            // 텍스트 모듈
-            if (moduleElement.hasClass('se-module-text') && !moduleElement.find('.se-module-text-notice').length) {
-                const text = moduleElement.text().trim();
-                if (text) {
-                    content += text + '\n\n';
-                    contentHtml += `<p>${moduleElement.html()}</p>`;
-                }
-            } 
-            // 이미지 모듈
-            else if (moduleElement.hasClass('se-module-image')) {
-                const img = moduleElement.find('img');
-                const imgSrc = img.attr('data-lazy-src') || img.attr('src');
-                if (imgSrc) {
-                    if (!firstImageFound) {
-                        content += `${imgSrc}\n\n`;
-                        contentHtml += `<p><img src="${imgSrc}" alt="image from blog" style="max-width:100%;"></p>`;
-                        firstImageFound = true;
-                    } else {
-                        content += `(사진)\n\n`;
-                        // HTML 결과에는 모든 이미지를 보여주되, 텍스트 결과에만 (사진)으로 표시
-                        contentHtml += `<p>(사진)</p>`; 
-                    }
-                }
-            }
-        });
-    }
-
-    // 3. 추출된 내용이 거의 없을 경우 fallback
-    if (content.trim().length < 50) {
-        console.log('[Cheerio] se-main-container에서 내용 추출 실패. 다른 선택자로 시도.');
-        let fallbackResult = extractNaverBlogText(html);
-        content = fallbackResult.text || fallbackResult;
-        contentHtml = fallbackResult.html || content.replace(/\n/g, '<br>');
-        
-        // 여전히 내용이 부족하면 간단한 텍스트 추출 시도
-        if (content.trim().length < 50) {
-            console.log('[Cheerio] 모든 선택자 실패. 간단한 텍스트 추출 시도.');
-            content = extractSimpleText(html);
-            contentHtml = content.replace(/\n/g, '<br>');
-        }
-    }
-    
-    // 4. 해시태그 추출 (중복 제거)
-    const tags = new Set();
-    $('.wrap_tag a, .post_tag a, .item_tag a, .tag_item a, a._rosRestrict, a.tag_log').each((i, tag) => {
-        let tagText = $(tag).text().trim();
-        if (tagText.startsWith('#')) {
-            tagText = tagText.substring(1).trim();
-        }
-        if (tagText) {
-            tags.add('#' + tagText);
-        }
-    });
-    const tagString = Array.from(tags).join(' ');
-
-    // 5. 전체 조합
-    let finalContent = '';
-    let finalContentHtml = '';
-
-    if (title) {
-        finalContent += title + '\n\n';
-        finalContentHtml += `<h3>${title}</h3>`;
-    }
-    if (notice) {
-        finalContent += notice + '\n\n';
-        finalContentHtml += `<p><em>${notice}</em></p>`;
-    }
-    
-    const trimmedContent = content.trim();
-    if (trimmedContent) {
-        finalContent += trimmedContent + '\n\n';
-        finalContentHtml += contentHtml;
-    }
-    
-    const trimmedTagString = tagString.trim();
-    if (trimmedTagString) {
-        finalContent += trimmedTagString;
-        finalContentHtml += `<br><p><strong>${trimmedTagString}</strong></p>`;
-    }
-    
-    finalContent = finalContent.trim().replace(/\n{3,}/g, '\n\n');
-
-    console.log(`[Cheerio] 최종 추출된 텍스트 길이: ${finalContent.length}`);
-    return { text: finalContent, html: finalContentHtml.trim() };
-}
-
-// 서버 시작
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`서버가 포트 ${PORT}에서 실행 중입니다.`);
     console.log(`환경: ${process.env.NODE_ENV || 'development'}`);

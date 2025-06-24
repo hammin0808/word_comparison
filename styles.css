@@ -798,4 +798,20 @@ body {
 /* 통계 및 요약 스타일 */
 #summaryStats {
     display: none;
+}
+
+#bloggerDocument p,
+#bloggerDocument div {
+    margin-top: 0;
+    margin-bottom: 8px;
+    padding: 0;
+    line-height: 1.6;
+}
+#bloggerDocument {
+    line-height: 1.6;
+    word-break: keep-all;
+}
+#bloggerDocument p:empty,
+#bloggerDocument div:empty {
+    display: none;
 } 

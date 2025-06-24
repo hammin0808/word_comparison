@@ -162,10 +162,17 @@ async function extractTextFromUrl(url) {
         }
         
         // 전역 변수에 텍스트와 HTML을 모두 저장
-        bloggerContent = data.text;
-        bloggerHtmlContent = data.html;
+        bloggerContent = data.text || '';
+        bloggerHtmlContent = data.html || '';
         
-        return data.text; // 미리보기용 텍스트만 반환
+        // text가 없고 html만 있으면, html에서 텍스트 추출
+        if (!bloggerContent && bloggerHtmlContent) {
+            const tempDiv = document.createElement('div');
+            tempDiv.innerHTML = bloggerHtmlContent;
+            bloggerContent = tempDiv.innerText.trim();
+        }
+        
+        return bloggerContent; // 미리보기/비교용 텍스트 반환
         
     } catch (error) {
         console.error('API 호출 또는 파싱 실패:', error);
