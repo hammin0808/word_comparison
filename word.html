@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>원고 비교 분석 도구</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📄 원고 비교 분석 도구</h1>
+            <p>원본 워드 원고와 블로거 작성 원고를 비교하여 차이점을 분석합니다</p>
+        </div>
+
+        <div class="upload-section">
+            <div class="upload-box">
+                <h3>📋 원본 원고 (정답 기준)</h3>
+                <input type="file" id="originalFile" accept=".docx,.doc" />
+                <div class="file-info" id="originalInfo">워드 파일을 선택해주세요</div>
+            </div>
+            
+            <div class="upload-box">
+                <h3>✏️ 블로거 작성 원고</h3>
+                <div class="input-toggle">
+                    <button type="button" class="toggle-btn active" data-type="url">🔗 URL 입력</button>
+                    <button type="button" class="toggle-btn" data-type="file">📁 파일 업로드</button>
+                </div>
+                
+                <div class="input-container" id="urlContainer">
+                    <input type="url" id="blogUrl" placeholder="블로그 URL을 입력하세요 (예: https://blog.naver.com/...)" />
+                    <button type="button" id="extractBtn" class="extract-btn">텍스트 추출</button>
+                </div>
+                
+                <div class="input-container" id="fileContainer" style="display: none;">
+                    <input type="file" id="bloggerFile" accept=".docx,.doc" />
+                </div>
+                
+                <div class="file-info" id="bloggerInfo">블로그 URL을 입력하거나 파일을 선택해주세요</div>
+            </div>
+        </div>
+
+        <button class="compare-btn" id="compareBtn" disabled>
+            🔍 원고 비교 분석 시작
+        </button>
+
+        <div class="loading" id="loading">
+            <div class="spinner"></div>
+            <p>원고를 분석하고 있습니다...</p>
+        </div>
+
+        <div class="results" id="results">
+            <h2>📊 비교 분석 결과</h2>
+            
+            <!-- 비교 모드 선택 -->
+            <div class="comparison-controls">
+                <button class="comparison-mode-btn active" data-mode="side-by-side">📄 나란히 비교</button>
+                <button class="comparison-mode-btn" data-mode="detailed">📋 상세 분석</button>
+            </div>
+
+            <!-- 차이점 범례 -->
+            <div class="diff-legend">
+                <div class="legend-item">
+                    <div class="legend-color legend-added"></div>
+                    <span>추가됨</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color legend-removed"></div>
+                    <span>삭제됨</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color legend-modified"></div>
+                    <span>수정됨</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color legend-unchanged"></div>
+                    <span>동일함</span>
+                </div>
+            </div>
+
+            <!-- 차이점 통계 -->
+            <div class="diff-stats" id="diffStats">
+                <!-- 통계 정보가 여기에 동적으로 추가됩니다 -->
+            </div>
+
+            <!-- 나란히 비교 뷰 -->
+            <div class="document-comparison" id="documentComparison">
+                <div class="document-panel">
+                    <h3>📋 원본 원고</h3>
+                    <div class="document-content" id="originalDocument">
+                        <!-- 원본 문서 내용이 여기에 표시됩니다 -->
+                    </div>
+                </div>
+                <div class="document-panel">
+                    <h3>✏️ 블로거 원고</h3>
+                    <div class="document-content" id="bloggerDocument">
+                        <!-- 블로거 문서 내용이 여기에 표시됩니다 -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- 기존 상세 분석 뷰 -->
+            <div class="summary-stats" id="summaryStats" style="display: none;">
+                <!-- 통계 정보가 여기에 동적으로 추가됩니다 -->
+            </div>
+
+            <div id="differencesList" style="display: none;">
+                <!-- 차이점 목록이 여기에 동적으로 추가됩니다 -->
+            </div>
+        </div>
+    </div>
+
+    <!-- 텍스트 입력 모달 -->
+    <div id="textInputModal" class="text-input-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>🚨 네이버 블로그 텍스트 추출 실패</h3>
+                <p>네이버 블로그는 자동 텍스트 추출이 제한되어 있습니다.</p>
+            </div>
+            
+            <div class="modal-instructions">
+                <strong>📋 수동으로 텍스트를 복사해주세요:</strong>
+                <ol>
+                    <li>🔗 해당 블로그 페이지로 이동</li>
+                    <li>📝 본문 내용을 전체 선택 (Ctrl+A 또는 Cmd+A)</li>
+                    <li>📋 복사 (Ctrl+C 또는 Cmd+C)</li>
+                    <li>📥 아래 입력창에 붙여넣기 (Ctrl+V 또는 Cmd+V)</li>
+                </ol>
+            </div>
+            
+            <textarea id="manualTextInput" class="text-input-area" 
+                      placeholder="여기에 블로그 텍스트를 붙여넣어 주세요..."></textarea>
+            
+            <div id="charCounter" class="char-counter">0자 (최소 50자 필요)</div>
+            
+            <div class="modal-actions">
+                <button id="cancelModal" class="modal-btn modal-btn-secondary">취소</button>
+                <button id="confirmText" class="modal-btn modal-btn-primary" disabled>확인</button>
+                        </div>
+                        </div>
+                    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
