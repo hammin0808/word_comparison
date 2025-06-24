@@ -2,8 +2,16 @@ const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
 const cheerio = require('cheerio');
-const puppeteer = require('puppeteer');
 const path = require('path');
+
+// Puppeteer 조건부 import
+let puppeteer = null;
+try {
+    puppeteer = require('puppeteer');
+    console.log('Puppeteer loaded successfully');
+} catch (error) {
+    console.log('Puppeteer not available, using Cheerio only');
+}
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -41,13 +49,17 @@ app.post('/api/extract-text', async (req, res) => {
             return res.json({ success: true, text, html });
         }
 
-        // 2. Cheerio 추출 실패 시 Puppeteer로 재시도
-        console.log('[Server] Cheerio 추출 실패 또는 내용 부족. Puppeteer로 재시도.');
-        const puppeteerText = await extractNaverBlogWithPuppeteer(url);
-        if (puppeteerText && puppeteerText.length >= 50) {
-            console.log('[Server] Puppeteer 추출 성공');
-            const puppeteerHtml = puppeteerText.replace(/\n/g, '<br>').replace(/(https?:\/\/[^\s]+)/g, '<a href="$1" target="_blank">$1</a>');
-            return res.json({ success: true, text: puppeteerText, html: puppeteerHtml });
+        // 2. Puppeteer가 사용 가능한 경우에만 재시도
+        if (puppeteer) {
+            console.log('[Server] Cheerio 추출 실패 또는 내용 부족. Puppeteer로 재시도.');
+            const puppeteerText = await extractNaverBlogWithPuppeteer(url);
+            if (puppeteerText && puppeteerText.length >= 50) {
+                console.log('[Server] Puppeteer 추출 성공');
+                const puppeteerHtml = puppeteerText.replace(/\n/g, '<br>').replace(/(https?:\/\/[^\s]+)/g, '<a href="$1" target="_blank">$1</a>');
+                return res.json({ success: true, text: puppeteerText, html: puppeteerHtml });
+            }
+        } else {
+            console.log('[Server] Puppeteer not available, skipping fallback');
         }
         
         console.log('[Server] 모든 추출 방법 실패.');
@@ -56,21 +68,23 @@ app.post('/api/extract-text', async (req, res) => {
     } catch (error) {
         console.error('[Server] 최초 추출 시도 중 오류 발생:', error.message);
         
-        // 3. 최초 시도(axios)에서 에러 발생 시 Puppeteer로 재시도
-        try {
-            console.log('[Server] 오류로 인해 Puppeteer로 재시도.');
-            const puppeteerText = await extractNaverBlogWithPuppeteer(url);
-            if (puppeteerText && puppeteerText.length >= 50) {
-                console.log('[Server] Puppeteer 재시도 추출 성공');
-                const puppeteerHtml = puppeteerText.replace(/\n/g, '<br>').replace(/(https?:\/\/[^\s]+)/g, '<a href="$1" target="_blank">$1</a>');
-                return res.json({ success: true, text: puppeteerText, html: puppeteerHtml });
+        // 3. Puppeteer가 사용 가능한 경우에만 재시도
+        if (puppeteer) {
+            try {
+                console.log('[Server] 오류로 인해 Puppeteer로 재시도.');
+                const puppeteerText = await extractNaverBlogWithPuppeteer(url);
+                if (puppeteerText && puppeteerText.length >= 50) {
+                    console.log('[Server] Puppeteer 재시도 추출 성공');
+                    const puppeteerHtml = puppeteerText.replace(/\n/g, '<br>').replace(/(https?:\/\/[^\s]+)/g, '<a href="$1" target="_blank">$1</a>');
+                    return res.json({ success: true, text: puppeteerText, html: puppeteerHtml });
+                }
+                console.log('[Server] Puppeteer 재시도 실패.');
+            } catch (puppeteerError) {
+                console.error('[Server] Puppeteer 재시도 중 오류 발생:', puppeteerError.message);
             }
-            console.log('[Server] Puppeteer 재시도 실패.');
-            res.status(500).json({ success: false, error: '서버에서 블로그 내용을 가져오는 데 실패했습니다.' });
-        } catch (puppeteerError) {
-            console.error('[Server] Puppeteer 재시도 중 오류 발생:', puppeteerError.message);
-            res.status(500).json({ success: false, error: '서버에서 블로그 내용을 가져오는 데 실패했습니다.' });
         }
+        
+        res.status(500).json({ success: false, error: '서버에서 블로그 내용을 가져오는 데 실패했습니다.' });
     }
 });
 
@@ -257,6 +271,11 @@ function extractNaverBlogText(html, url) {
 
 // Puppeteer를 사용하여 네이버 블로그 텍스트 추출 (Fallback)
 async function extractNaverBlogWithPuppeteer(url) {
+    if (!puppeteer) {
+        console.log('[Puppeteer] Puppeteer not available');
+        return null;
+    }
+    
     console.log(`[Puppeteer] 추출 시작: ${url}`);
     let browser;
     try {
@@ -495,4 +514,5 @@ function extractNaverBlogContent(html) {
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`서버가 포트 ${PORT}에서 실행 중입니다.`);
     console.log(`환경: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`Puppeteer 사용 가능: ${puppeteer ? 'Yes' : 'No'}`);
 });
