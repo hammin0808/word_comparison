@@ -37,10 +37,15 @@ app.post('/api/extract-text', async (req, res) => {
     try {
         // 1. Cheerio를 사용한 모바일 페이지 우선 파싱
         const targetUrl = url.replace('blog.naver.com', 'm.blog.naver.com');
+        console.log(`[Server] 모바일 URL로 요청: ${targetUrl}`);
+        
         const response = await axios.get(targetUrl, {
             headers: { 'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 13_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.1.1 Mobile/15E148 Safari/604.1' },
             timeout: 15000
         });
+
+        console.log(`[Server] HTTP 응답 상태: ${response.status}`);
+        console.log(`[Server] 응답 데이터 길이: ${response.data.length}`);
 
         const { text, html } = extractNaverBlogContent(response.data);
 
@@ -67,6 +72,7 @@ app.post('/api/extract-text', async (req, res) => {
 
     } catch (error) {
         console.error('[Server] 최초 추출 시도 중 오류 발생:', error.message);
+        console.error('[Server] 오류 상세:', error);
         
         // 3. Puppeteer가 사용 가능한 경우에만 재시도
         if (puppeteer) {
@@ -414,6 +420,26 @@ async function extractNaverBlogWithPuppeteer(url) {
     }
 }
 
+// 간단한 텍스트 추출 함수 (fallback용)
+function extractSimpleText(html) {
+    const $ = cheerio.load(html);
+    
+    // 모든 script, style 태그 제거
+    $('script, style').remove();
+    
+    // 텍스트만 추출
+    let text = $('body').text();
+    
+    // 텍스트 정리
+    text = text
+        .replace(/\s+/g, ' ')  // 연속된 공백을 하나로
+        .replace(/\n\s*\n/g, '\n')  // 연속된 줄바꿈 제거
+        .replace(/[\t\r]/g, ' ')  // 탭과 캐리지 리턴을 공백으로
+        .trim();
+    
+    return text;
+}
+
 // Cheerio를 사용하여 네이버 블로그 텍스트/HTML 추출
 function extractNaverBlogContent(html) {
     const $ = cheerio.load(html);
@@ -461,9 +487,16 @@ function extractNaverBlogContent(html) {
     // 3. 추출된 내용이 거의 없을 경우 fallback
     if (content.trim().length < 50) {
         console.log('[Cheerio] se-main-container에서 내용 추출 실패. 다른 선택자로 시도.');
-        let fallbackContent = extractNaverBlogText(html);
-        content = fallbackContent;
-        contentHtml = content.replace(/\n/g, '<br>');
+        let fallbackResult = extractNaverBlogText(html);
+        content = fallbackResult.text || fallbackResult;
+        contentHtml = fallbackResult.html || content.replace(/\n/g, '<br>');
+        
+        // 여전히 내용이 부족하면 간단한 텍스트 추출 시도
+        if (content.trim().length < 50) {
+            console.log('[Cheerio] 모든 선택자 실패. 간단한 텍스트 추출 시도.');
+            content = extractSimpleText(html);
+            contentHtml = content.replace(/\n/g, '<br>');
+        }
     }
     
     // 4. 해시태그 추출 (중복 제거)
