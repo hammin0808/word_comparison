@@ -2,8 +2,16 @@ const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
 const cheerio = require('cheerio');
-const puppeteer = require('puppeteer');
 const path = require('path');
+
+// Puppeteer를 선택적으로 로드 (Render 환경에서 문제 방지)
+let puppeteer;
+try {
+    puppeteer = require('puppeteer');
+} catch (error) {
+    console.log('[Server] Puppeteer 로드 실패, Cheerio만 사용합니다:', error.message);
+    puppeteer = null;
+}
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -41,36 +49,52 @@ app.post('/api/extract-text', async (req, res) => {
             return res.json({ success: true, text, html });
         }
 
-        // 2. Cheerio 추출 실패 시 Puppeteer로 재시도
-        console.log('[Server] Cheerio 추출 실패 또는 내용 부족. Puppeteer로 재시도.');
-        const puppeteerText = await extractNaverBlogWithPuppeteer(url);
-        if (puppeteerText && puppeteerText.length >= 50) {
-            console.log('[Server] Puppeteer 추출 성공');
-            const puppeteerHtml = puppeteerText.replace(/\n/g, '<br>').replace(/(https?:\/\/[^\s]+)/g, '<a href="$1" target="_blank">$1</a>');
-            return res.json({ success: true, text: puppeteerText, html: puppeteerHtml });
+        // 2. Cheerio 추출 실패 시 Puppeteer로 재시도 (Puppeteer가 사용 가능한 경우에만)
+        if (puppeteer) {
+            console.log('[Server] Cheerio 추출 실패 또는 내용 부족. Puppeteer로 재시도.');
+            try {
+                const puppeteerText = await extractNaverBlogWithPuppeteer(url);
+                if (puppeteerText && puppeteerText.length >= 50) {
+                    console.log('[Server] Puppeteer 추출 성공');
+                    const puppeteerHtml = puppeteerText.replace(/\n/g, '<br>').replace(/(https?:\/\/[^\s]+)/g, '<a href="$1" target="_blank">$1</a>');
+                    return res.json({ success: true, text: puppeteerText, html: puppeteerHtml });
+                }
+            } catch (puppeteerError) {
+                console.log('[Server] Puppeteer 추출 실패:', puppeteerError.message);
+            }
+        } else {
+            console.log('[Server] Puppeteer를 사용할 수 없습니다.');
         }
         
         console.log('[Server] 모든 추출 방법 실패.');
-        return res.status(400).json({ success: false, error: '내용을 추출할 수 없거나 너무 짧습니다.' });
+        return res.status(400).json({ 
+            success: false, 
+            error: '내용을 추출할 수 없거나 너무 짧습니다. 수동으로 텍스트를 복사해주세요.' 
+        });
 
     } catch (error) {
         console.error('[Server] 최초 추출 시도 중 오류 발생:', error.message);
         
-        // 3. 최초 시도(axios)에서 에러 발생 시 Puppeteer로 재시도
-        try {
-            console.log('[Server] 오류로 인해 Puppeteer로 재시도.');
-            const puppeteerText = await extractNaverBlogWithPuppeteer(url);
-            if (puppeteerText && puppeteerText.length >= 50) {
-                console.log('[Server] Puppeteer 재시도 추출 성공');
-                const puppeteerHtml = puppeteerText.replace(/\n/g, '<br>').replace(/(https?:\/\/[^\s]+)/g, '<a href="$1" target="_blank">$1</a>');
-                return res.json({ success: true, text: puppeteerText, html: puppeteerHtml });
+        // 3. 최초 시도(axios)에서 에러 발생 시 Puppeteer로 재시도 (사용 가능한 경우에만)
+        if (puppeteer) {
+            try {
+                console.log('[Server] 오류로 인해 Puppeteer로 재시도.');
+                const puppeteerText = await extractNaverBlogWithPuppeteer(url);
+                if (puppeteerText && puppeteerText.length >= 50) {
+                    console.log('[Server] Puppeteer 재시도 추출 성공');
+                    const puppeteerHtml = puppeteerText.replace(/\n/g, '<br>').replace(/(https?:\/\/[^\s]+)/g, '<a href="$1" target="_blank">$1</a>');
+                    return res.json({ success: true, text: puppeteerText, html: puppeteerHtml });
+                }
+                console.log('[Server] Puppeteer 재시도 실패.');
+            } catch (puppeteerError) {
+                console.error('[Server] Puppeteer 재시도 중 오류 발생:', puppeteerError.message);
             }
-            console.log('[Server] Puppeteer 재시도 실패.');
-            res.status(500).json({ success: false, error: '서버에서 블로그 내용을 가져오는 데 실패했습니다.' });
-        } catch (puppeteerError) {
-            console.error('[Server] Puppeteer 재시도 중 오류 발생:', puppeteerError.message);
-            res.status(500).json({ success: false, error: '서버에서 블로그 내용을 가져오는 데 실패했습니다.' });
         }
+        
+        res.status(500).json({ 
+            success: false, 
+            error: '서버에서 블로그 내용을 가져오는 데 실패했습니다. 수동으로 텍스트를 복사해주세요.' 
+        });
     }
 });
 
@@ -257,12 +281,17 @@ function extractNaverBlogText(html, url) {
 
 // Puppeteer를 사용하여 네이버 블로그 텍스트 추출 (Fallback)
 async function extractNaverBlogWithPuppeteer(url) {
+    if (!puppeteer) {
+        console.log('[Puppeteer] Puppeteer를 사용할 수 없습니다.');
+        return null;
+    }
+    
     console.log(`[Puppeteer] 추출 시작: ${url}`);
     let browser;
     try {
         browser = await puppeteer.launch({ 
             headless: true,
-            args: ['--no-sandbox', '--disable-setuid-sandbox'] 
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'] 
         });
         const page = await browser.newPage();
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
@@ -373,7 +402,11 @@ async function extractNaverBlogWithPuppeteer(url) {
         return null;
     } finally {
         if (browser) {
-            await browser.close();
+            try {
+                await browser.close();
+            } catch (closeError) {
+                console.error('[Puppeteer] 브라우저 종료 중 오류:', closeError.message);
+            }
         }
     }
 }
@@ -477,4 +510,5 @@ function extractNaverBlogContent(html) {
 // 서버 시작
 app.listen(PORT, () => {
     console.log(`서버가 http://localhost:${PORT} 에서 실행 중입니다.`);
+    console.log(`Puppeteer 상태: ${puppeteer ? '사용 가능' : '사용 불가능 (Cheerio만 사용)'}`);
 });
